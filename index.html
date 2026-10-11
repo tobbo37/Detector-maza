@@ -1,189 +1,63 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Detector de movimiento de la maza</title>
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Detector de maza conectado a PC</title>
 <style>
-  :root { color-scheme: dark; }
-  body {
-    background: #111827; color: #f9fafb; font-family: Arial, sans-serif;
-    text-align: center; padding: 24px 14px; margin: 0;
-  }
-  main { max-width: 560px; margin: auto; }
-  button {
-    padding: 13px 18px; border: 0; border-radius: 10px; font-size: 16px;
-    margin: 7px; cursor: pointer;
-  }
-  #iniciar { background: #38bdf8; color: #082f49; font-weight: bold; }
-  #calibrar { background: #d1d5db; color: #111827; }
-  #estado {
-    padding: 22px 12px; margin: 20px auto; border-radius: 14px;
-    background: #374151; font-size: 22px; font-weight: bold;
-  }
-  #barra {
-    height: 16px; background: #374151; border-radius: 12px;
-    overflow: hidden; max-width: 440px; margin: 12px auto 20px;
-  }
-  #nivel { height: 100%; width: 0%; background: #38bdf8; transition: width 80ms; }
-  .datos { font-size: 17px; line-height: 1.9; }
-  .nota { color: #cbd5e1; line-height: 1.5; font-size: 14px; }
-  code { color: #7dd3fc; }
-</style>
-</head>
-<body>
-<main>
-  <h1>Detector de movimiento de la maza</h1>
-  <p>Probá dejar el celular quieto y después levantarlo rápidamente.</p>
-  <button id="iniciar">Iniciar sensor</button>
-  <button id="calibrar">Recalibrar</button>
-
-  <div id="estado">Esperando que inicies el sensor…</div>
-  <div id="barra"><div id="nivel"></div></div>
-
-  <div class="datos">
-    <div>Aceleración (módulo): <b id="intensidad">N/D</b></div>
-    <div>Cambio de aceleración: <b id="cambio">N/D</b></div>
-    <div>Giro máximo: <b id="giro">N/D</b> °/s</div>
-    <div>Detecciones: <b id="cuenta">0</b></div>
-  </div>
-  <p id="info" class="nota">En algunos celulares el navegador solicita permiso para usar los sensores.</p>
-  <p class="nota">Prototipo de prueba: los umbrales son orientativos y deben ajustarse al dispositivo y al gesto real.</p>
-</main>
-
+body{background:#111827;color:#f9fafb;font:16px Arial;text-align:center;padding:20px;max-width:600px;margin:auto}
+button{padding:12px 16px;margin:8px;border:0;border-radius:9px;font-size:16px}
+#go{background:#38bdf8}input{width:90%;padding:12px;border-radius:8px}
+#estado{background:#374151;padding:20px;border-radius:12px;margin:18px 0;font-size:21px}
+small{color:#cbd5e1;line-height:1.5}
+</style></head><body>
+<h1>Detector de movimiento</h1>
+<p>Pegá la URL HTTPS de ngrok que aparece en la PC:</p>
+<input id="url" placeholder="https://tu-direccion.ngrok-free.app">
+<br><button id="go">Iniciar sensor y enviar a PC</button><button id="cal">Recalibrar</button>
+<div id="estado">Esperando…</div>
+<p>Aceleración: <b id="acc">N/D</b> m/s²</p>
+<p>Cambio: <b id="change">N/D</b> m/s²</p>
+<p>Giro: <b id="gyro">N/D</b> °/s</p>
+<p>Detecciones: <b id="count">0</b></p>
+<p>Conexión: <b id="conn">sin iniciar</b></p>
+<small>Dejá el teléfono quieto durante la calibración. Esta es una prueba; los umbrales pueden necesitar ajuste.</small>
 <script>
-"use strict";
-
-let ultimaLectura = null;
-let cuenta = 0;
-let ultimoDisparo = 0;
-let calibrando = false;
-let listenerActivo = false;
-
-// Umbrales iniciales ajustables.
-const UMBRAL_CAMBIO = 12;       // m/s² entre lecturas consecutivas
-const UMBRAL_GIRO = 220;        // grados/segundo
-const TIEMPO_ENTRE_DISPAROS = 1200;
-
-const estado = document.getElementById("estado");
-const info = document.getElementById("info");
-
-document.getElementById("iniciar").addEventListener("click", iniciar);
-document.getElementById("calibrar").addEventListener("click", recalibrar);
-
-async function iniciar() {
-  try {
-    if (!("DeviceMotionEvent" in window)) {
-      info.textContent = "Este navegador no ofrece eventos de movimiento. Probá otro navegador en el celular.";
-      return;
-    }
-
-    if (typeof DeviceMotionEvent.requestPermission === "function") {
-      const permiso = await DeviceMotionEvent.requestPermission();
-      if (permiso !== "granted") {
-        info.textContent = "No se concedió permiso para usar los sensores.";
-        return;
-      }
-    }
-
-    if (!listenerActivo) {
-      window.addEventListener("devicemotion", leerMovimiento, true);
-      listenerActivo = true;
-    }
-    recalibrar();
-    estado.textContent = "Sensor activo: dejá el celular quieto";
-    estado.style.background = "#374151";
-    info.textContent = "Calibración inicial: mantenelo quieto durante 2 segundos.";
-  } catch (error) {
-    info.textContent = "No se pudo activar el sensor: " + error.message +
-      ". Asegurate de abrir esta página desde HTTPS y permitir el acceso.";
+let prev=null, count=0, lastFire=0, lastSend=0, calibrating=false, busy=false;
+const CHANGE_LIMIT=12, GYRO_LIMIT=220, COOLDOWN=1200;
+const $=id=>document.getElementById(id);
+function url(){return $('url').value.trim().replace(/\/+$/,'')}
+$('go').onclick=async()=>{
+ if(!url().startsWith('https://')){$('conn').textContent='Pegá una URL HTTPS válida';return}
+ try{let r=await fetch(url()+'/health');if(!r.ok)throw Error();$('conn').textContent='PC conectada'}
+ catch(e){$('conn').textContent='No conecta: revisá Python, ngrok y la URL';return}
+ if(!('DeviceMotionEvent' in window)){$('conn').textContent='Este navegador no ofrece sensores';return}
+ try{
+  if(typeof DeviceMotionEvent.requestPermission==='function'){
+   let p=await DeviceMotionEvent.requestPermission();if(p!=='granted')throw Error('Permiso denegado')
   }
+  window.removeEventListener('devicemotion',read,true);
+  window.addEventListener('devicemotion',read,true);calibrate();
+ }catch(e){$('conn').textContent='No se pudo activar: '+e.message}
+};
+$('cal').onclick=calibrate;
+function calibrate(){prev=null;calibrating=true;$('estado').textContent='Calibrando: dejá el celular quieto';setTimeout(()=>{calibrating=false;$('estado').textContent='Listo: probá levantarlo'},2000)}
+async function send(data){
+ if(busy)return;busy=true;
+ try{let r=await fetch(url()+'/motion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw Error();$('conn').textContent='Enviando datos ✓'}
+ catch(e){$('conn').textContent='Error de envío; revisá ngrok'}
+ finally{busy=false}
 }
-
-function recalibrar() {
-  ultimaLectura = null;
-  calibrando = true;
-  estado.textContent = "Calibrando… mantené el celular quieto";
-  estado.style.background = "#1d4ed8";
-  info.textContent = "No muevas el celular durante 2 segundos.";
-  setTimeout(() => {
-    calibrando = false;
-    estado.textContent = "Listo: probá levantar el celular";
-    estado.style.background = "#374151";
-    info.textContent = "Si detecta demasiados movimientos, hay que ajustar los umbrales.";
-  }, 2000);
+function read(e){
+ let a=e.acceleration,g=e.rotationRate;
+ if(!a||![a.x,a.y,a.z].every(v=>v!==null&&Number.isFinite(v))){$('acc').textContent='N/D';return}
+ let {x,y,z}=a, mag=Math.sqrt(x*x+y*y+z*z);
+ let rot=g?Math.max(Math.abs(g.alpha||0),Math.abs(g.beta||0),Math.abs(g.gamma||0)):0;
+ $('acc').textContent=mag.toFixed(1);$('gyro').textContent=rot.toFixed(0);
+ if(calibrating){prev={x,y,z};return} if(!prev){prev={x,y,z};return}
+ let change=Math.sqrt((x-prev.x)**2+(y-prev.y)**2+(z-prev.z)**2);prev={x,y,z};
+ $('change').textContent=change.toFixed(1);
+ let now=Date.now(), event='muestra', detected=change>CHANGE_LIMIT||rot>GYRO_LIMIT;
+ if(detected&&now-lastFire>COOLDOWN){lastFire=now;count++;event='movimiento_detectado';$('count').textContent=count;$('estado').textContent='¡MOVIMIENTO DETECTADO!';$('estado').style.background='#166534'}
+ else if(!detected){$('estado').textContent='Esperando movimiento…';$('estado').style.background='#374151'}
+ let data={timestamp:new Date().toISOString(),accel_x:+x.toFixed(3),accel_y:+y.toFixed(3),accel_z:+z.toFixed(3),accel_magnitude:+mag.toFixed(3),change:+change.toFixed(3),gyro:+rot.toFixed(2),event,detections:count};
+ if(event==='movimiento_detectado'||now-lastSend>120){lastSend=now;send(data)}
 }
-
-function leerMovimiento(evento) {
-  const a = evento.acceleration;
-  const g = evento.rotationRate;
-
-  const valoresValidos = a &&
-    [a.x, a.y, a.z].every(v => v !== null && Number.isFinite(v));
-
-  const giro = g ? Math.max(
-    Math.abs(g.alpha || 0),
-    Math.abs(g.beta || 0),
-    Math.abs(g.gamma || 0)
-  ) : 0;
-
-  document.getElementById("giro").textContent =
-    g ? giro.toFixed(0) : "N/D";
-
-  if (!valoresValidos) {
-    document.getElementById("intensidad").textContent = "N/D";
-    document.getElementById("cambio").textContent = "N/D";
-    document.getElementById("nivel").style.width = "0%";
-    info.textContent = "El navegador no está entregando aceleración lineal. Podés ver giro si está disponible; probá otro navegador o dispositivo.";
-    return;
-  }
-
-  const {x, y, z} = a;
-  const intensidad = Math.sqrt(x*x + y*y + z*z);
-  document.getElementById("intensidad").textContent = intensidad.toFixed(1);
-
-  if (calibrando) {
-    ultimaLectura = {x, y, z};
-    return;
-  }
-
-  if (!ultimaLectura) {
-    ultimaLectura = {x, y, z};
-    return;
-  }
-
-  const cambio = Math.sqrt(
-    (x - ultimaLectura.x) ** 2 +
-    (y - ultimaLectura.y) ** 2 +
-    (z - ultimaLectura.z) ** 2
-  );
-  ultimaLectura = {x, y, z};
-
-  document.getElementById("cambio").textContent = cambio.toFixed(1);
-  const intensidadVisual = Math.min(100, Math.max(cambio / 30, giro / 500) * 100);
-  document.getElementById("nivel").style.width = intensidadVisual + "%";
-
-  const movimientoValido = cambio > UMBRAL_CAMBIO || giro > UMBRAL_GIRO;
-  const ahora = Date.now();
-
-  if (movimientoValido && ahora - ultimoDisparo > TIEMPO_ENTRE_DISPAROS) {
-    ultimoDisparo = ahora;
-    cuenta++;
-    document.getElementById("cuenta").textContent = String(cuenta);
-    estado.textContent = "¡MOVIMIENTO DETECTADO!";
-    estado.style.background = "#166534";
-    info.textContent = "Cambio: " + cambio.toFixed(1) + " m/s² · Giro: " + giro.toFixed(0) + " °/s";
-    setTimeout(() => {
-      if (!calibrando) {
-        estado.textContent = "Sensor activo: probá otro movimiento";
-        estado.style.background = "#374151";
-      }
-    }, 850);
-  } else if (!movimientoValido) {
-    estado.textContent = "Esperando movimiento…";
-    estado.style.background = "#374151";
-  }
-}
-</script>
-</body>
-</html>
+</script></body></html>
