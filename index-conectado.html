@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Detector de maza conectado a PC</title>
+<style>
+body{background:#111827;color:#f9fafb;font:16px Arial;text-align:center;padding:20px;max-width:600px;margin:auto}
+button{padding:12px 16px;margin:8px;border:0;border-radius:9px;font-size:16px}
+#go{background:#38bdf8}input{width:90%;padding:12px;border-radius:8px}
+#estado{background:#374151;padding:20px;border-radius:12px;margin:18px 0;font-size:21px}
+small{color:#cbd5e1;line-height:1.5}
+</style></head><body>
+<h1>Detector de movimiento</h1>
+<p>Pegá la URL HTTPS de ngrok que aparece en la PC:</p>
+<input id="url" placeholder="https://tu-direccion.ngrok-free.app">
+<br><button id="go">Iniciar sensor y enviar a PC</button><button id="cal">Recalibrar</button>
+<div id="estado">Esperando…</div>
+<p>Aceleración: <b id="acc">N/D</b> m/s²</p>
+<p>Cambio: <b id="change">N/D</b> m/s²</p>
+<p>Giro: <b id="gyro">N/D</b> °/s</p>
+<p>Detecciones: <b id="count">0</b></p>
+<p>Conexión: <b id="conn">sin iniciar</b></p>
+<small>Dejá el teléfono quieto durante la calibración. Esta es una prueba; los umbrales pueden necesitar ajuste.</small>
+<script>
+let prev=null, count=0, lastFire=0, lastSend=0, calibrating=false, busy=false;
+const CHANGE_LIMIT=12, GYRO_LIMIT=220, COOLDOWN=1200;
+const $=id=>document.getElementById(id);
+function url(){return $('url').value.trim().replace(/\/+$/,'')}
+$('go').onclick=async()=>{
+ if(!url().startsWith('https://')){$('conn').textContent='Pegá una URL HTTPS válida';return}
+ try{let r=await fetch(url()+'/health');if(!r.ok)throw Error();$('conn').textContent='PC conectada'}
+ catch(e){$('conn').textContent='No conecta: revisá Python, ngrok y la URL';return}
+ if(!('DeviceMotionEvent' in window)){$('conn').textContent='Este navegador no ofrece sensores';return}
+ try{
+  if(typeof DeviceMotionEvent.requestPermission==='function'){
+   let p=await DeviceMotionEvent.requestPermission();if(p!=='granted')throw Error('Permiso denegado')
+  }
+  window.removeEventListener('devicemotion',read,true);
+  window.addEventListener('devicemotion',read,true);calibrate();
+ }catch(e){$('conn').textContent='No se pudo activar: '+e.message}
+};
+$('cal').onclick=calibrate;
+function calibrate(){prev=null;calibrating=true;$('estado').textContent='Calibrando: dejá el celular quieto';setTimeout(()=>{calibrating=false;$('estado').textContent='Listo: probá levantarlo'},2000)}
+async function send(data){
+ if(busy)return;busy=true;
+ try{let r=await fetch(url()+'/motion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw Error();$('conn').textContent='Enviando datos ✓'}
+ catch(e){$('conn').textContent='Error de envío; revisá ngrok'}
+ finally{busy=false}
+}
+function read(e){
+ let a=e.acceleration,g=e.rotationRate;
+ if(!a||![a.x,a.y,a.z].every(v=>v!==null&&Number.isFinite(v))){$('acc').textContent='N/D';return}
+ let {x,y,z}=a, mag=Math.sqrt(x*x+y*y+z*z);
+ let rot=g?Math.max(Math.abs(g.alpha||0),Math.abs(g.beta||0),Math.abs(g.gamma||0)):0;
+ $('acc').textContent=mag.toFixed(1);$('gyro').textContent=rot.toFixed(0);
+ if(calibrating){prev={x,y,z};return} if(!prev){prev={x,y,z};return}
+ let change=Math.sqrt((x-prev.x)**2+(y-prev.y)**2+(z-prev.z)**2);prev={x,y,z};
+ $('change').textContent=change.toFixed(1);
+ let now=Date.now(), event='muestra', detected=change>CHANGE_LIMIT||rot>GYRO_LIMIT;
+ if(detected&&now-lastFire>COOLDOWN){lastFire=now;count++;event='movimiento_detectado';$('count').textContent=count;$('estado').textContent='¡MOVIMIENTO DETECTADO!';$('estado').style.background='#166534'}
+ else if(!detected){$('estado').textContent='Esperando movimiento…';$('estado').style.background='#374151'}
+ let data={timestamp:new Date().toISOString(),accel_x:+x.toFixed(3),accel_y:+y.toFixed(3),accel_z:+z.toFixed(3),accel_magnitude:+mag.toFixed(3),change:+change.toFixed(3),gyro:+rot.toFixed(2),event,detections:count};
+ if(event==='movimiento_detectado'||now-lastSend>120){lastSend=now;send(data)}
+}
+</script></body></html>
